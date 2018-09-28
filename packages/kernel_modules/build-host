@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -eu
+
 # We can almost do everything from the Makefile itself by using default values for
 #
 #    LINUX_DIR ?= "/lib/modules/$(uname -r)/build"
@@ -20,5 +22,5 @@ while getopts j: OPT; do
   esac
 done
 shift $(($OPTIND - 1))
-make -j "$j" KERNEL_MODULES_PATH="$(pwd)" LINUX_DIR="/lib/modules/$(uname -r)/build" "$@"
-make -C user/ -j "$j" "$@"
+make -j "$j" BR2_EXTERNAL_KERNEL_MODULES_PATH="$(pwd)" LINUX_DIR="/lib/modules/$(uname -r)/build" SRC_DIR="$(pwd)" "$@"
+ make -C user/ -j "$j" "$@"

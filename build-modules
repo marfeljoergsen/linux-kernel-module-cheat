@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+
+import distutils.file_util
+import multiprocessing
+import os
+import platform
+import shutil
+import subprocess
+import time
+
+import common
+
+parser = common.get_argparse()
+common.add_build_arguments(parser)
+parser.add_argument(
+    '--host',
+    action='store_true',
+    default=False,
+    help='Build the modules for the host instead of guest',
+)
+parser.add_argument(
+    'extra_make_args',
+    default=[],
+    metavar='extra-make-args',
+    nargs='*',
+)
+args = common.setup(parser)
+if args.host:
+    build_dir = os.path.join(common.kernel_modules_build_host_dir)
+else:
+    build_dir = os.path.join(common.kernel_modules_build_dir)
+if args.clean:
+    common.rmrf(build_dir)
+else:
+    os.makedirs(build_dir, exist_ok=True)
+
+    # Build kernel modules.
+    #
+    # I kid you not, out-of-tree build is not possible, O= does not work as for the kernel build:
+    #
+    # * https://stackoverflow.com/questions/5718899/building-an-out-of-tree-linux-kernel-module-in-a-separate-object-directory
+    # * https://stackoverflow.com/questions/12244979/build-kernel-module-into-a-specific-directory
+    # * https://stackoverflow.com/questions/18386182/out-of-tree-kernel-modules-multiple-module-single-makefile-same-source-file
+    #
+    # This copies only modified files as per:
+    # https://stackoverflow.com/questions/5718899/building-an-out-of-tree-linux-kernel-module-in-a-separate-object-directory
+    for basename in os.listdir(common.kernel_modules_src_dir):
+        src = os.path.join(common.kernel_modules_src_dir, basename)
+        if os.path.isfile(src):
+            distutils.file_util.copy_file(
+                src,
+                os.path.join(build_dir, basename),
+                update=1,
+            )
+    start_time = time.time()
+    tool = 'gcc'
+    if args.host:
+        allowed_toolchains = ['host']
+    else:
+        allowed_toolchains = None
+    gcc = common.get_toolchain_tool(tool, allowed_toolchains=allowed_toolchains)
+    prefix = gcc[:-len(tool)]
+    ccache = shutil.which('ccache')
+    if ccache is not None:
+        cc = '{} {}'.format(ccache, gcc)
+    else:
+        cc = gcc
+    if args.verbose:
+        verbose = ['V=1']
+    else:
+        verbose = []
+    if args.host:
+        linux_dir = os.path.join('/lib', 'modules', platform.uname().release, 'build')
+    else:
+        linux_dir = common.linux_build_dir
+    assert common.run_cmd(
+        (
+            [
+                'make',
+                '-j', str(multiprocessing.cpu_count()),
+                'ARCH={}'.format(common.linux_arch),
+                'CROSS_COMPILE={}'.format(prefix),
+                'CC={}'.format(cc),
+                'M={}'.format(build_dir),
+                'LINUX_DIR={}'.format(linux_dir),
+            ] +
+            verbose +
+            args.extra_make_args
+        ),
+        cwd=common.kernel_modules_src_dir,
+    ) == 0
+
+    # Build userland tools.
+    if args.host:
+        allowed_toolchains = ['host']
+    else:
+        allowed_toolchains = ['buildroot']
+    cc = common.get_toolchain_tool('gcc', allowed_toolchains=allowed_toolchains)
+    cxx = common.get_toolchain_tool('g++', allowed_toolchains=allowed_toolchains)
+    assert common.run_cmd(
+        [
+            'make',
+            '-j', str(multiprocessing.cpu_count()),
+            'CC={}'.format(cc),
+            'CXX={}'.format(cxx),
+            'OUT_DIR={}'.format(os.path.join(build_dir, 'user')),
+        ],
+        cwd=os.path.join(common.kernel_modules_src_dir, 'user'),
+        extra_paths=[common.ccache_dir],
+    ) == 0
+    end_time = time.time()
+    common.print_time(end_time - start_time)
